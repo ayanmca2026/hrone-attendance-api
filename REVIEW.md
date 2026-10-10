@@ -1,0 +1,16 @@
+# REVIEW.md
+
+List of defects found in the starter `app/main.py`:
+
+| # | Where (function / line) | What is wrong | How you'd notice it (test, input, or symptom) | How you fixed it |
+|---|---|---|---|---|
+| 1 | `MongoClient` initialization | The client is instantiated without `tz_aware=True`. This results in naive datetimes being returned by PyMongo which crash when compared/subtracted with aware datetimes (like `IST`). | Any time calculation using existing records (like punch out, overtime) would fail with a TypeError. | Added `tz_aware=True` to MongoClient initialization so UTC datetimes are handled correctly. |
+| 2 | `compute_late_minutes` | The rule calculates late minutes if it's strictly > 10 mins (600s). The starter checked `int(diff/60) > 10` which fails for 10 minutes and 10 seconds. | Punch in at 09:40:01 IST would yield 0 instead of 10 late minutes. | Switched to comparing raw seconds `if diff > 600:` and then flooring to minutes. |
+| 3 | `compute_work_hours` | Uses python's `round` which does banker's rounding (round to even). Spec R4 requires half-up rounding. | Work duration of 9.025 hours is rounded to 9.02 instead of 9.03. | Switched to using `Decimal(secs / 3600).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)`. |
+| 4 | `create_employee` & `punch_in` | Uses check-then-insert pattern which is prone to race conditions and duplicate data under concurrent loads. | Concurrent requests with same `emp_code` or punch-in date result in multiple DB records or corrupted state. | Removed manual checks before insert and relied on MongoDB `DuplicateKeyError` via unique indexes (`emp_code` and `(emp_code, date)`). |
+| 5 | `list_employees` | Skip logic for pagination was `page * page_size`, meaning page 1 skipped the first 20 records. | Requesting page 1 gives records 21-40. | Changed skip calculation to `(page - 1) * page_size`. |
+| 6 | `list_attendance` | Loaded all matching documents into memory via `list(...)` and sorted/paginated in Python. | On ~100k records, the API would consume massive amounts of memory and become extremely slow. | Replaced in-memory sorting/pagination with MongoDB native `.sort().skip().limit()` using appropriate indexes. |
+| 7 | `compute_overtime` | Did not enforce the R3 rule that overtime must be strictly >= 30 minutes to count. Overtime of 15 mins was counted as 15. | Punch out 15 mins after shift end would return 15 overtime minutes. | Added an explicit check `ot_mins if ot_mins >= 30 else 0`. |
+| 8 | `health` endpoint | Returned hardcoded `{"status": "ok"}` without actually verifying MongoDB connectivity. | Tests against a dead DB would report healthy but fail everywhere else. | Used `db.command("ping")` wrapped in a try/except returning 503 on failure. |
+| 9 | `punch_in` | Used naive `datetime.now()` instead of epoch milliseconds. Missed timezone information for conversions. | Epoch fields rendered as string dates in JSON responses. | Enforced Pydantic type models and strictly parsed to/from epoch MS. |
+| 10 | `compute_late_minutes` | Applied `replace(hour, minute)` on the provided date instead of converting shift start string relative to the true IST attendance date, failing overnight shifts. | Punching in early morning on an overnight shift would calculate lateness against the wrong day. | Used `date_type.fromisoformat(att_date)` to anchor the shift start correctly. |

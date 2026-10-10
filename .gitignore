@@ -1,0 +1,14 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+scratch/
+.idea/
+.vscode/
+*.egg-info/
+dist/
+build/
+Dockerfile
+docker-compose.yml
