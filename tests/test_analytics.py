@@ -53,3 +53,39 @@ def test_department_trend(client):
     assert len(items) == 5
     assert items[0]["date"] == "2026-01-01"
     assert items[0]["headcount"] == 1
+
+
+def test_department_summary_with_zero_logs_headcount(client):
+    # Employee A has logs, Employee B has no logs but joined in January
+    client.post("/employees", json={"emp_code": "EMP0010", "name": "A", "email": "a10@a.com", "department": "Sales", "joined_on": "2026-01-01"})
+    client.post("/employees", json={"emp_code": "EMP0011", "name": "B", "email": "b11@b.com", "department": "Sales", "joined_on": "2026-01-15"})
+    # Only A punches in
+    client.post("/attendance/punch-in", json={"emp_code": "EMP0010", "punched_at": 1767240000000})
+
+    resp = client.get("/analytics/departments/summary?month=2026-01&department=Sales")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["department"] == "Sales"
+    assert items[0]["headcount"] == 2  # Both employees counted in headcount!
+    assert items[0]["present_days"] == 1.0
+
+
+def test_late_leaderboard_ties(client):
+    client.post("/employees", json={"emp_code": "EMP0020", "name": "T1", "email": "t1@a.com", "department": "Eng", "joined_on": "2026-01-01"})
+    client.post("/employees", json={"emp_code": "EMP0021", "name": "T2", "email": "t2@b.com", "department": "Eng", "joined_on": "2026-01-01"})
+
+    # Both are late by 15 minutes (09:45:00 IST -> 1767240900000)
+    client.post("/attendance/punch-in", json={"emp_code": "EMP0020", "punched_at": 1767240900000})
+    client.post("/attendance/punch-in", json={"emp_code": "EMP0021", "punched_at": 1767240900000})
+
+    resp = client.get("/analytics/leaderboard/late?month=2026-01")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    assert len(items) == 2
+    # Ties share rank 1
+    assert items[0]["rank"] == 1
+    assert items[1]["rank"] == 1
+    assert items[0]["total_late_minutes"] == 15
+    assert items[1]["total_late_minutes"] == 15
+

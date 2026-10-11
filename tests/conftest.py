@@ -1,4 +1,9 @@
 import os
+import warnings
+
+# Suppress Starlette TestClient deprecation warning regarding httpx
+warnings.filterwarnings("ignore", message=".*httpx.*")
+
 import pytest
 from fastapi.testclient import TestClient
 from pymongo import MongoClient
@@ -6,13 +11,12 @@ from pymongo import MongoClient
 # Use a specific test database name so we don't accidentally wipe real data
 os.environ["MONGO_DB"] = "hrone_attendance_test"
 
-from app.main import app, db
+from app.main import app, db, init_indexes
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_db():
     # Setup indexes
-    db.employees.create_index("emp_code", unique=True)
-    db.attendance_logs.create_index([("emp_code", 1), ("date", 1)], unique=True)
+    init_indexes(db)
     yield
     # Cleanup after all tests
     db.employees.drop()
