@@ -6,7 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, List, Dict, Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Path, Body
+from fastapi import FastAPI, HTTPException, Query, Path, Body, Request, Header
 from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import DuplicateKeyError
@@ -24,6 +24,8 @@ client = MongoClient(
     serverSelectionTimeoutMS=5000,
 )
 db = client[os.getenv("MONGO_DB", "hrone_attendance")]
+ENABLE_ADMIN_EXPLAIN = os.getenv("ENABLE_ADMIN_EXPLAIN", "true").lower() in ("true", "1", "yes")
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 
 
 def init_indexes(target_db=None):
@@ -423,6 +425,11 @@ def regularize_attendance(
     date: str,
     body: RegularizeRequest
 ):
+    try:
+        date_type.fromisoformat(date)
+    except ValueError:
+        raise HTTPException(422, detail="Invalid date format in path")
+
     emp = db.employees.find_one({"emp_code": emp_code})
     if not emp:
         raise HTTPException(404, detail="Employee not found")
@@ -727,7 +734,7 @@ def department_summary(
     for d in res:
         avg_wh = None
         if d["wh_count"] > 0:
-            avg_wh = float(Decimal(d["wh_sum"] / d["wh_count"]).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+            avg_wh = float((Decimal(str(round(d["wh_sum"], 4))) / Decimal(str(d["wh_count"]))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
         items.append({
             "department": d["_id"],
             "headcount": d["headcount"],
@@ -780,7 +787,6 @@ def late_leaderboard(
         }},
         {"$match": {"rank": {"$lte": limit}}},
         {"$sort": {"total_late_minutes": -1, "_id": 1}},
-        {"$limit": limit},
         {"$project": {
             "_id": 0,
             "rank": 1,
@@ -953,19 +959,62 @@ def department_trend(
 
 @app.get("/admin/explain/{endpoint}")
 def explain_endpoint(
+    request: Request,
     endpoint: str = Path(..., enum=["attendance_list", "employee_monthly", "department_summary", "late_leaderboard", "department_trend"]),
     emp_code: Optional[str] = None,
-    month: Optional[str] = None,
+    month: Optional[str] = Query(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
     department: Optional[str] = None,
-    limit: int = 10,
+    limit: int = Query(10, ge=1, le=50),
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     status: Optional[str] = None,
-    from_date: Optional[str] = Query(None, alias="from"),
-    to_date: Optional[str] = Query(None, alias="to"),
-    page: int = 1,
-    page_size: int = 20
+    from_date: Optional[str] = Query(None, alias="from", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    to_date: Optional[str] = Query(None, alias="to", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")
 ):
+    # Production security protection & authorization
+    if not ENABLE_ADMIN_EXPLAIN:
+        raise HTTPException(403, detail="Admin explain endpoint is disabled in production")
+
+    if ADMIN_API_KEY:
+        if not x_admin_key or x_admin_key != ADMIN_API_KEY:
+            raise HTTPException(403, detail="Unauthorized admin access")
+
+    # Parameter & date validation
+    if status and status not in ALL_STATUS:
+        raise HTTPException(422, detail="Invalid status")
+
+    if date_from or date_to:
+        if date_from:
+            try:
+                date_type.fromisoformat(date_from)
+            except ValueError:
+                raise HTTPException(422, detail="Invalid date_from format")
+        if date_to:
+            try:
+                date_type.fromisoformat(date_to)
+            except ValueError:
+                raise HTTPException(422, detail="Invalid date_to format")
+        if date_from and date_to and date_from > date_to:
+            raise HTTPException(422, detail="date_from > date_to")
+
+    if from_date or to_date:
+        if from_date:
+            try:
+                f_dt = date_type.fromisoformat(from_date)
+            except ValueError:
+                raise HTTPException(422, detail="Invalid from date format")
+        if to_date:
+            try:
+                t_dt = date_type.fromisoformat(to_date)
+            except ValueError:
+                raise HTTPException(422, detail="Invalid to date format")
+        if from_date and to_date:
+            if t_dt < f_dt or (t_dt - f_dt).days > 92:
+                raise HTTPException(422, detail="Invalid date range (max 92 days)")
+
     if endpoint == "attendance_list":
         q = {}
         if emp_code:
